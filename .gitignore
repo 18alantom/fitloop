@@ -1,9 +1,11 @@
 # Files in which I throw things at a wall
-# to see what sticks
-TrialAndError.ipynb
+# to see what sticks.
+data/ 
+models/
 temp/
 temp.*
 *.temp
+test.ipynb
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

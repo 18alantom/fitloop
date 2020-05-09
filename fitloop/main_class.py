@@ -71,7 +71,7 @@ class FitLoop:
                  criteria: Optional[str]=None,
                  criteria_direction: int=1,
                  
-                 # Preserving Model State
+                 # Model Preservation
                  save_to_disk: bool=False,
                  save_path: str="models",
                  pretrained_model_name: Optional[str]=None,
@@ -135,7 +135,7 @@ class FitLoop:
             - criteria_direction : whether more is better (1) or less is better (-1) 
                 for model score criteria.
         
-        # Preserving Model State
+        # Model Preservation
             - save_to_disk : True then save pretrained and best_model to the disk, else it is 
                 stored as an attribute.
             - save_path : location where the initial and pretrained models are to be saved
@@ -182,7 +182,7 @@ class FitLoop:
         self.criteria_direction = criteria_direction
         
         
-        # Preserving Model State
+        # Model Preservation
         if pretrained_model_name is None:
             u = str(uuid4()).split('-')[1]
             pretrained_model_name = f"pretrained_{u}.pt"
@@ -193,6 +193,8 @@ class FitLoop:
         self.best_model_name = best_model_name
         self.save_to_disk = save_to_disk
         self.save_path = Path(save_path)
+        if self.save_to_disk and not self.save_path.exists():
+            self.save_path.mkdir()
         
         # INITIALIZE NON ARGS
         self.best_model_state_dict = None
@@ -224,7 +226,10 @@ class FitLoop:
         else:
             cri = f"best_score:{self.best_score}"
         return f"<FitLoop :: epoch_num:{self.epoch_num} {cri} at {hex(id(self))}>"
-        
+    
+    def __call__(self, x):
+        with torch.no_grad():
+            return self.model.eval()(x)
             
             
     # ---------------------------------------------------------------------
@@ -798,7 +803,7 @@ class FitLoop:
         if self.test_dl is not None or test_dl is not None:
             print()
             print(f"RUNNING SANITY CHECK: TEST LOOP - {steps} STEP(s)")
-            self.__loop(use_test_dl=use_test_dl, epochs=epochs, steps=steps, print_every=print_every, 
+            self.__loop(use_test_dl=use_test_dl, steps=steps, print_every=print_every, 
                         display_metrics=display_metrics, continue_loop=continue_loop,
                         define_all=define_all, no_print=no_print, no_cast=no_cast, 
                         no_float=no_float, no_progress=no_progress, 
@@ -861,7 +866,7 @@ class FitLoop:
             self.__load_model(self._PR)
         self.epoch_num = 0
         self.best_score = self.criteria_direction * float('-inf')
-        self.metrics = None
+        self.metrics = MetricsAggregator()
         
         
     # ---------------------------------------------------------------------
@@ -894,7 +899,7 @@ class FitLoop:
     Functions to delete stored model weights.
     """
     
-    def del_pretrained(self) -> None:
+    def del_pretrained_model(self) -> None:
         """
         Deletes the pretrianed model state dict from the disk if 
         `save_to_disk` else states attribute to None
