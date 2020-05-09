@@ -1,3 +1,10 @@
+# Files in which I throw things at a wall
+# to see what sticks
+TrialAndError.ipynb
+temp/
+temp.*
+*.temp
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
