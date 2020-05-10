@@ -3,9 +3,9 @@
 
 ---
 # What's `fitloop`
-`fitloop` is a substitute to having to write the boilerplate code associated with writing the trianing loop with some added niceties.
+`fitloop` is a substitute to having to write the boilerplate code associated with writing the training loop with some added niceties.
 
-Sample Code using `fitloop` to train a model for 10 epochs.
+Sample code using `fitloop` to train a model for 10 epochs.
 ```python
 from fitloop import FitLoop
 
@@ -74,7 +74,7 @@ For extending the usage beyond basic a few more additional components are requir
 - `criteria` - name of the validation criteria that is used to evaluate the model, this is a value that is returned from the state dict.
 
 
-### `configure_optimizer`
+### Configure Optimizer
 ```python
 configure_optimizer(floop:FitLoop) -> None
 ```
@@ -161,9 +161,9 @@ fdict = {
     "test_step":test_step,
     
     # Epoch End Stage Functions
-    "train_epoch_end": common_epoch_end,
-    "valid_epoch_end": common_epoch_end,
-    "test_epoch_end": common_epoch_end,
+    "train_epoch_end": train_epoch_end,
+    "valid_epoch_end": valid_epoch_end,
+    "test_epoch_end": test_epoch_end,
     
     # Model Evaluation
     "criteria": "accuracy", # Returned in valid_epoch_end stage function dict
@@ -180,7 +180,7 @@ trainer = FitLoop(**fdict)
 ---
 ## Usage
 ### Training
-model can be trained using `FitLoop.fit`, in the below example the model is being trained for 4 epochs, after every 2 epochs it will ask whether to continue trianing.
+model can be trained using `FitLoop.fit`, in the below example the model is being trained for 4 epochs, after every 2 epochs it will ask whether to continue training.
 ![training](examples/train.png)
 
 ### Metrics
