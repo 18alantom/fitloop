@@ -3,9 +3,15 @@
 
 ---
 # What's `fitloop`
-`fitloop` is a substitute to having to write the boilerplate code associated with writing the training loop with some added niceties.
+`fitloop` is a substitute to having to write the  boilerplate code pertaining to the training loop with some added niceties.
 
-Sample code using `fitloop` to train a model for 10 epochs.
+## Installation
+```shell
+$ pip install fitloop
+```
+
+## Sample
+Training a model using `fitloop` for 10 epochs.
 ```python
 from fitloop import FitLoop
 
@@ -28,11 +34,14 @@ fdict = {
 trainer = FitLoop(**fdict)
 trainer.fit(epochs=10)
 ```
-
+## Demo 
+COLAB Links for training a simple CNN on FashionMNIST.
+- [Simple Usage](https://colab.research.google.com/drive/1Ez21_lBHcvBZdChieTxLb6rqR-5U6ppi?usp=sharing)
+- [Usage](https://colab.research.google.com/drive/1KyfnynLEiZo2YXcMuDhF3wVcJgANUj2F?usp=sharing)
 ---
 
-## Intro
-### Stages
+# Intro
+## Stages
 A training loop can be divided into stages. Here it has been divided into three.
 1. Batch Step
     - This is the stage where forward pass occurs `model(X)`.
@@ -42,7 +51,7 @@ A training loop can be divided into stages. Here it has been divided into three.
 3. Epoch Start
     - Stage at the start of the loop where (if required) pretrain initializations can be executed.
 
-### Phases
+## Phases
 Model training and evaluation consists of three phases.
 1. Training 
 2. Validation
@@ -59,7 +68,7 @@ If the use case is simple then even this is not required, there are predefined s
 - For a more comprehensive example showcasing more of `fitloop`s features check out [Usage.ipynb](https://github.com/18alantom/fitloop/blob/master/examples/Usage.ipynb)
 
 ---
-## Setup
+# Setup
 For the most basic usage of `fitloop`  the few things that need to be defined are.
 - `model` - the Pytorch [model](https://pytorch.org/docs/stable/nn.html#module) that needs to be trained.
 - `optimizer` - Pytorch [optimizer](https://pytorch.org/docs/stable/optim.html#torch.optim.Optimizer) that is used to optimize the model.
@@ -74,7 +83,7 @@ For extending the usage beyond basic a few more additional components are requir
 - `criteria` - name of the validation criteria that is used to evaluate the model, this is a value that is returned from the state dict.
 
 
-### Configure Optimizer
+## Configure Optimizer
 ```python
 configure_optimizer(floop:FitLoop) -> None
 ```
@@ -88,22 +97,22 @@ configure_optimizer(floop:FitLoop) -> None
     - When `FitLoop.run_sanity_check` or `FitLoop.run_profiler` are called.
 - `configure_optimizer` can be called using `FitLoop.configure_optimizer`.
 
-### Stage Functions
+## Stage Functions
 There are nine stage functions (three for each of the three phases) that are called in the loop.
 ```python
 phase_stagefunction(state:LoopState) -> Dict[str,float]
 ```
-#### BatchStep
+### BatchStep
 - `train_step` - should call `loss.backward` and `optimizer.step` and return metrics to be tracked.
 - `valid_step`, `test_step` - should return metrics to be tracked.
 - `test_step` - should return metrics to be tracked.
-#### Epoch End Step
+### Epoch End Step
 - `train_epoch_end`, `valid_epoch_end`,`test_epoch_end` - calculate required metrics such as `loss` from values returned in the batch step.
-#### Epoch Start Step
+### Epoch Start Step
 - `train_epoch_start`, `valid_epoch_start`,`test_epoch_start` - Can be used for initilizations.
 
 
-#### Example stage functions
+### Example stage functions
 Batch Step stage function for train phase
 ```python
 def train_step(state):
@@ -142,7 +151,7 @@ def train_epoch_end(state):
     }
 ```
 
-### Creating a `fitloop` trainer
+## Creating a `fitloop` trainer
 Once all the components have been set up a `fitloop` trainer can be set up like so
 ```python
 fdict = {
@@ -178,18 +187,18 @@ fdict = {
 trainer = FitLoop(**fdict)
 ```
 ---
-## Usage
-### Training
+# Usage
+## Training
 model can be trained using `FitLoop.fit`, in the below example the model is being trained for 4 epochs, after every 2 epochs it will ask whether to continue training.
 ![training](examples/train.png)
 
-### Metrics
+## Metrics
 All metrics returned from the stage functions can be accessed using `FitLoop.M` 
 
 `FitLoop.plot(metric_name)` can be used to plot the required metrics that have been returned from the `train_epoch_end` and `valid_epoch_end` stage functions.
 ![plotting](examples/plot.png)
 
-### Testing
+## Testing
 Calling `FitLoop.test()` will run the loop in test mode ie for one epoch with the stage functions defined for testing.
 
 ---
