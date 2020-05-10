@@ -942,5 +942,5 @@ class FitLoop:
         return self.metrics.test
     
     @property
-    def plot(self,*args,**kwargs):
+    def plot(self):
         return self.metrics.plot
