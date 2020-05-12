@@ -206,6 +206,7 @@ class FitLoop:
         self.state_name = "state.pt"
         self.model_name = "model.pt"
         self.initial_state = "initial.pt"
+        self._temp = None
         
         # Change criteria if defaults are being used
         if self.valid_step is FitLoopDefaults.valid_step:
@@ -576,8 +577,7 @@ class FitLoop:
                     is_better = (score > self.best_score) if direc else (score < self.best_score)
                     if is_better:
                         self.best_score = score
-                        if not(profiler or is_sanity_check):
-                            self.__save_model(self._BS)
+                        self.__save_model(self._BS)
 
                 # PRINT EPOCH[PHASE] METRICS
                 epoch_metrics = state[phase]._get_epoch_metrics(display_metrics)
@@ -707,9 +707,17 @@ class FitLoop:
         
     """
     SECTION: 3 - B
-    
+
     Loop methods for (sort of) unit testing and timing of components.
     """
+    def _checkup(self, start:bool)->None:
+        if start:
+            self._temp = self.best_model_name
+            self.best_model_name = "_checkupmodel.pt"
+        else:
+            self.best_model_name = self._temp
+            self._temp = None
+
     def run_profiler(self,
             epochs:Optional[int]=1, steps: Optional[int]=None, define_all:bool=False,
             no_cast:bool=False, no_float:bool=False, no_progress:bool=False, print_outcome:bool=True,
@@ -748,6 +756,7 @@ class FitLoop:
             logging.warn("save_to_disk=False; precheck save not possible; profiling aborted")
             return
         
+        self._checkup(True)
         self._precheck_save()
         t1 = time.perf_counter()
         try:
@@ -760,6 +769,8 @@ class FitLoop:
                             test_dl=test_dl, is_test=True)
         except Exception as e:
             logging.error(f"error occured: {repr(e)}")
+        self.del_best_model()
+        self._checkup(False)
         st = ptime(time.perf_counter() - t1)
         self._postcheck_load()
         if print_outcome:
@@ -813,6 +824,7 @@ class FitLoop:
             logging.warn("save_to_disk=False; precheck save not possible; sanity check aborted")
             return
         
+        self._checkup(True)
         self._precheck_save()
         try:
             print(f"RUNNING SANITY CHECK: TRAIN LOOP - {epochs} EPOCH(s), {steps} STEP(s)")
@@ -833,6 +845,8 @@ class FitLoop:
                             is_sanity_check=True, is_test=True)
         except Exception as e:
             logging.error(f"error occured: {repr(e)}")
+        self.del_best_model()
+        self._checkup(False)
         self._postcheck_load()
     
     
@@ -912,7 +926,7 @@ class FitLoop:
         if Path(name).suffix != ".pt":
             name += ".pt"
         path = self.save_path/name
-        self.model.load_state_dict(torch.load(path,map_location=device))
+        self.model.load_state_dict(torch.load(path,map_location=map_location))
         if self.configure_optimizer is None or not configure_optimizer:
             print("please reconfigure FitLoop.optimizer before training")
         else:
@@ -1059,7 +1073,7 @@ class FitLoop:
         `save_to_disk` else states attribute to None
         """
         if self.save_to_disk:
-            self.del_model(self.pretrained_model_name)
+            self.delete(self.pretrained_model_name)
         else:
             del self.pretrained_model_state_dict
         
@@ -1069,7 +1083,7 @@ class FitLoop:
         `save_to_disk` else states attribute to None
         """
         if self.save_to_disk:
-            self.del_model(self.best_model_name)
+            self.delete(self.best_model_name)
         else:
             del self.best_model_state_dict
             
