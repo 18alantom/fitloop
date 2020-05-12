@@ -1,6 +1,7 @@
 import time
 import math
 import warnings
+import logging
 import torch
 
 from uuid import uuid4
@@ -12,11 +13,74 @@ from fitloop.helpers.state import LoopState
 from fitloop.helpers.helpers import ftime, ptime
 from fitloop.helpers.metrics import MetricsAggregator
 from fitloop.helpers.defaults import FitLoopDefaults
-from .main_constants import *
+from fitloop.main_constants import *
 
 class FitLoop:
     """
     FitLoop trains Pytorch models.
+    ----
+    PARAMETERS:
+    # Basic Blocks
+        The bare minimum required along with train_dl.
+        - model : nn.Module model that has to be trained
+        - optimizer : an optimizer from torch.optim
+        - loss_function : function to compute loss
+        
+    # DataLoader
+        - train_dl : training DataLoader
+        - valid_dl : validation DataLoader, if None validation will be ignored
+        - test_dl : testing DataLoader, if None `.test()` will not run
+        
+    # Batch Step
+        Functions that take in a LoopState object to perform 
+        required calculations, functions should return a dict with values
+        to be used in the epoch end step.
+        - train_step : portion of the loop where forward and backward 
+            passes take place.
+        - valid_step : validation portion of the loop.
+        - test_step : called when `FitLoop.test()` is called.
+    
+    # Epoch Start Step
+        - train_epoch_start : Train phase stage function in the epoch loop at the start.
+        - valid_epoch_start : Valid phase stage function in the epoch loop at the start.
+        - test_epoch_start : Test phase stage function in the epoch loop at the start.
+    
+    # Epoch End Step
+        Functions that take in a LoopState object to perform 
+        required calculations, functions should return a dict with values
+        that are to be returned when the loop is over.
+        - train_epoch_end : after training epoch has ended.
+        - valid_epoch_end : after validation epoch has ended.
+        - test_epoch_end : called when the test loop is done, one iteration
+            over all batches in the test dataloader.
+            
+    # Other Stage Functions
+        - preloop : function that is called before the epoch loop runs, it is passed
+            all the loop variables (local()) in a dict.
+        - postloop : function that is called after the epoch loop runs, it is passed
+            all the loop variables (local()) in a dict.
+    
+    # Other Args
+        - lr_scheduler : scheduler from torch.optim.lr_scheduler
+        - device : torch.device model will be cast to device this prior to the loop
+        - configure_optimizer : function that configures the optimizer, will be called
+            whenever the model weights have to be restored.
+        - dtype : floating point dtype to cast model and data to
+        
+    # Model Evaluation
+        - criteria : model evaluation metric that is returned in the dict of the
+            `valid_epoch_end` stage function if None (default) best model and 
+            best score are not tracked.
+        - criteria_direction : whether more is better (1) or less is better (-1) 
+            for model score criteria.
+    
+    # Model Preservation
+        - save_to_disk : True then save pretrained and best_model to the disk, else it is 
+            stored as an attribute.
+        - save_path : location where the initial and pretrained models are to be saved
+        - pretrained_model_name : Name to save the pretrained model by, defaults to a
+            generated uuid.
+        - best_model_name : Name to save the best model by, defaults to a generated uuid.
     """
     
     # ---------------------------------------------------------------------
@@ -71,76 +135,11 @@ class FitLoop:
                  criteria_direction: int=1,
                  
                  # Model Preservation
-                 save_to_disk: bool=False,
-                 save_path: str="models",
+                 save_to_disk: bool=True,
+                 save_path: str="fitloop_state",
                  pretrained_model_name: Optional[str]=None,
                  best_model_name: Optional[str]=None,
                 ) -> None:
-        """
-        FitLoop constructor
-        ----
-        PARAMETERS:
-        # Basic Blocks
-            The bare minimum required along with train_dl.
-            - model : nn.Module model that has to be trained
-            - optimizer : an optimizer from torch.optim
-            - loss_function : function to compute loss
-         
-        # DataLoader
-            - train_dl : training DataLoader
-            - valid_dl : validation DataLoader, if None validation will be ignored
-            - test_dl : testing DataLoader, if None `.test()` will not run
-         
-        # Batch Step
-            Functions that take in a LoopState object to perform 
-            required calculations, functions should return a dict with values
-            to be used in the epoch end step.
-            - train_step : portion of the loop where forward and backward 
-                passes take place.
-            - valid_step : validation portion of the loop.
-            - test_step : called when `FitLoop.test()` is called.
-        
-        # Epoch Start Step
-            - train_epoch_start : Train phase stage function in the epoch loop at the start.
-            - valid_epoch_start : Valid phase stage function in the epoch loop at the start.
-            - test_epoch_start : Test phase stage function in the epoch loop at the start.
-        
-        # Epoch End Step
-            Functions that take in a LoopState object to perform 
-            required calculations, functions should return a dict with values
-            that are to be returned when the loop is over.
-            - train_epoch_end : after training epoch has ended.
-            - valid_epoch_end : after validation epoch has ended.
-            - test_epoch_end : called when the test loop is done, one iteration
-                over all batches in the test dataloader.
-                
-        # Other Stage Functions
-            - preloop : function that is called before the epoch loop runs, it is passed
-                all the loop variables (local()) in a dict.
-            - postloop : function that is called after the epoch loop runs, it is passed
-                all the loop variables (local()) in a dict.
-        
-        # Other Args
-            - lr_scheduler : scheduler from torch.optim.lr_scheduler
-            - device : torch.device model will be cast to device this prior to the loop
-            - configure_optimizer : function that configures the optimizer, will be called
-                whenever the model weights have to be restored.
-            - dtype : floating point dtype to cast model and data to
-            
-        # Model Evaluation
-            - criteria : model evaluation metric that is returned in the dict of the
-                `valid_epoch_end` stage function if None (default) best model and 
-                best score are not tracked.
-            - criteria_direction : whether more is better (1) or less is better (-1) 
-                for model score criteria.
-        
-        # Model Preservation
-            - save_to_disk : True then save pretrained and best_model to the disk, else it is 
-                stored as an attribute.
-            - save_path : location where the initial and pretrained models are to be saved
-            - pretrained_model_name : Name to save the pretrained model by
-            - best_model_name : Name to save the best model by
-        """
         # Basic Blocks
         self._model = None # Setter called below
         self.optimizer = optimizer
@@ -202,6 +201,11 @@ class FitLoop:
         self.best_score = self.criteria_direction * float('-inf')
         self.time_profile = {}
         self.metrics = MetricsAggregator()
+        self._state_name = None
+        self.temp_state_name = "temp.pt"
+        self.state_name = "state.pt"
+        self.model_name = "model.pt"
+        self.initial_state = "initial.pt"
         
         # Change criteria if defaults are being used
         if self.valid_step is FitLoopDefaults.valid_step:
@@ -217,7 +221,9 @@ class FitLoop:
     @model.setter
     def model(self, model):
         self._model = model.to(device=self.device, dtype=self.dtype)
-        self.__save_model(self._PR)
+        if self.configure_optimizer is not None:
+            self.configure_optimizer(self)
+            
     
     def __repr__(self):
         if self.criteria is not None:
@@ -244,8 +250,12 @@ class FitLoop:
         step_funcs = {s:f for s,f in zip(self._sets, step_funcs)}
         step_func = step_funcs[phase]
         
-        if step_func is None:
-            raise AttributeError(f"{phase}_step not assigned")
+        if step_func is None :
+            if state.phase is self._TR:
+                raise AttributeError(f"{phase}_step not assigned")
+            else:
+                return
+            
         rdict = step_func(state)
         if isinstance(rdict,dict):
             state._append_batch_step(rdict)
@@ -259,7 +269,7 @@ class FitLoop:
         step_func = step_funcs[phase]
         
         if step_func is None:
-            return None
+            return
         rdict = step_func(state)
         if isinstance(rdict,dict):
             state._append_epoch_start(rdict)
@@ -272,7 +282,7 @@ class FitLoop:
         step_func = step_funcs[state.phase]
         
         if step_func is None:
-            raise AttributeError(f"{phase}_end_step not assigned")
+            return 
         rdict = step_func(state)
         if isinstance(rdict,dict):
             state._append_epoch_end(rdict)
@@ -348,8 +358,7 @@ class FitLoop:
     
     def __profile_other(self,val,name):
         # TODO: Profiler for other metrics: CPU, GPU, RAM usages.
-        print("NOT IMPLEMENTED YET")
-        pass
+        raise NotImplementedError("..under construction")
         
         
     # ---------------------------------------------------------------------
@@ -439,7 +448,7 @@ class FitLoop:
         btqdm = lambda : tqdm(range(tot_size),leave=False or is_test,disable=no_progress,\
                                bar_format=bar_format,unit="batch",dynamic_ncols=True)
          
-        # PROFILER STATEMENT ---------
+        # PROFILER STATEMENT --------- (probably should not be here)
         if profiler:
             print(f"RUNNING PROFILER: {'TEST' if is_test else 'TRAIN'} LOOP" , ("" if is_test else f"{epochs} EPOCH(s)"))
             for dlo in dl: 
@@ -561,13 +570,14 @@ class FitLoop:
                 # EPOCH END STEP - END 
                 
                 # UPDATE MARKERS
-                if not (is_tr or is_test or profiler or is_sanity_check) and self.criteria is not None:
+                if not (is_tr or is_test) and self.criteria is not None:
                     score = state[phase]._get_epoch_metric(self.criteria)
                     direc = self.criteria_direction > 0
                     is_better = (score > self.best_score) if direc else (score < self.best_score)
                     if is_better:
                         self.best_score = score
-                        self.__save_model(self._BS)
+                        if not(profiler or is_sanity_check):
+                            self.__save_model(self._BS)
 
                 # PRINT EPOCH[PHASE] METRICS
                 epoch_metrics = state[phase]._get_epoch_metrics(display_metrics)
@@ -616,7 +626,7 @@ class FitLoop:
 
         # RESTORE BEST MODEL
         prof_restore_model = tpr() # ⏳
-        if load_best or profiler or is_sanity_check:
+        if load_best:
             self.__load_model(self._BS)
         profiler and _profile_time(prof_restore_model,tpr(),f'restore model') # ⏳
 
@@ -734,15 +744,24 @@ class FitLoop:
          - valid_dl : Will use this instead of DatLoader passed in the constructor call.
          - test_dl : Will use this instead of DatLoader passed in the constructor call.
         """
+        if not self.save_to_disk:
+            logging.warn("save_to_disk=False; precheck save not possible; profiling aborted")
+            return
+        
+        self._precheck_save()
         t1 = time.perf_counter()
-        self.__loop(epochs=epochs,steps=steps, define_all=define_all, no_cast=no_cast, 
-                    no_float=no_float, no_print=True, no_progress=no_progress, 
-                    train_dl=train_dl, valid_dl=valid_dl, profiler=True)
-        if self.test_dl is not None or test_dl is not None:
-            self.__loop(steps=steps, define_all=define_all, no_cast=no_cast, 
-                        no_float=no_float, no_print=True, no_progress=no_progress, profiler=True, 
-                        test_dl=test_dl, is_test=True)
+        try:
+            self.__loop(epochs=epochs,steps=steps, define_all=define_all, no_cast=no_cast, 
+                        no_float=no_float, no_print=True, no_progress=no_progress, 
+                        train_dl=train_dl, valid_dl=valid_dl, profiler=True)
+            if self.test_dl is not None or test_dl is not None:
+                self.__loop(steps=steps, define_all=define_all, no_cast=no_cast, 
+                            no_float=no_float, no_print=True, no_progress=no_progress, profiler=True, 
+                            test_dl=test_dl, is_test=True)
+        except Exception as e:
+            logging.error(f"error occured: {repr(e)}")
         st = ptime(time.perf_counter() - t1)
+        self._postcheck_load()
         if print_outcome:
             self.print_time_profile()
             time_profile = self.time_profile
@@ -790,24 +809,31 @@ class FitLoop:
          - valid_dl : Will use this instead of DatLoader passed in the constructor call.
          - test_dl : Will use this instead of DatLoader passed in the constructor call.
         """
-    
+        if not self.save_to_disk:
+            logging.warn("save_to_disk=False; precheck save not possible; sanity check aborted")
+            return
         
-        print(f"RUNNING SANITY CHECK: TRAIN LOOP - {epochs} EPOCH(s), {steps} STEP(s)")
-        self.__loop(epochs=epochs, steps=steps, print_every=print_every, 
-                    display_metrics=display_metrics, continue_loop=continue_loop,
-                    define_all=define_all, no_print=no_print, no_cast=no_cast, 
-                    no_float=no_float, no_progress=no_progress, 
-                    train_dl=train_dl,valid_dl=valid_dl,
-                    is_sanity_check=True)
-        if self.test_dl is not None or test_dl is not None:
-            print()
-            print(f"RUNNING SANITY CHECK: TEST LOOP - {steps} STEP(s)")
-            self.__loop(use_test_dl=use_test_dl, steps=steps, print_every=print_every, 
+        self._precheck_save()
+        try:
+            print(f"RUNNING SANITY CHECK: TRAIN LOOP - {epochs} EPOCH(s), {steps} STEP(s)")
+            self.__loop(epochs=epochs, steps=steps, print_every=print_every, 
                         display_metrics=display_metrics, continue_loop=continue_loop,
                         define_all=define_all, no_print=no_print, no_cast=no_cast, 
                         no_float=no_float, no_progress=no_progress, 
-                        test_dl=test_dl,
-                        is_sanity_check=True, is_test=True)
+                        train_dl=train_dl,valid_dl=valid_dl,
+                        is_sanity_check=True)
+            if self.test_dl is not None or test_dl is not None:
+                print()
+                print(f"RUNNING SANITY CHECK: TEST LOOP - {steps} STEP(s)")
+                self.__loop(use_test_dl=use_test_dl, steps=steps, print_every=print_every, 
+                            display_metrics=display_metrics, continue_loop=continue_loop,
+                            define_all=define_all, no_print=no_print, no_cast=no_cast, 
+                            no_float=no_float, no_progress=no_progress, 
+                            test_dl=test_dl,
+                            is_sanity_check=True, is_test=True)
+        except Exception as e:
+            logging.error(f"error occured: {repr(e)}")
+        self._postcheck_load()
     
     
     # ---------------------------------------------------------------------
@@ -817,43 +843,87 @@ class FitLoop:
     Functions to preserve the model state.
     """
     
+    # Internal Use
     def __save_model(self, typ:str) -> None:
         """
         Save model to object or to the disk.
         """
         name = self.best_model_name if typ == self._BS else self.pretrained_model_name
-        path = self.save_path/ name
-        state_dict = deepcopy(self._model.state_dict())
         if self.save_to_disk:
-            torch.save(state_dict, path)
-            
-        elif typ == self._BS:
-            self.best_model_state_dict = state_dict
-        elif typ == self._PR:
-            self.pretrained_model_state_dict = state_dict
+            self.save_model(name)
         else:
-            logging.warning("model save failed")
+            path = self.save_path/ name
+            state_dict = deepcopy(self._model.state_dict())
+
+            if typ == self._BS:
+                self.best_model_state_dict = state_dict
+            elif typ == self._PR:
+                self.pretrained_model_state_dict = state_dict
+            else:
+                logging.warning("model save failed")
         
     def __load_model(self, typ:str):
         """
         Load model from the object or from the disk.
         """
         name = self.best_model_name if typ == self._BS else self.pretrained_model_name
-        path = self.save_path/ name
         if self.save_to_disk:
-            state_dict = torch.load(path, map_location=self.device)
-        elif typ == self._BS:
-            state_dict = self.best_model_state_dict
+            self.load_model(name)
         else:
-            state_dict = self.pretrained_model_state_dict
-        self._model.load_state_dict(state_dict)
-        if self.configure_optimizer is None:
+            path = self.save_path/ name
+            if typ == self._BS:
+                state_dict = self.best_model_state_dict
+            else:
+                state_dict = self.pretrained_model_state_dict
+            self._model.load_state_dict(state_dict)
+            if self.configure_optimizer is None:
+                print("please reconfigure FitLoop.optimizer before training")
+            else:
+                self.configure_optimizer(self)
+    
+    # API
+    def save_model(self, name=None):
+        """
+        Saves the model's state dict to the given path.
+        ----
+        PARAMETERS
+        path : Load path, default is "fitloop_state/model.pt"
+        configure_optimizer : calls the function if true to set param_groups
+        """
+        if not self.save_to_disk:
+            logging.warn("save_to_disk=False; save model aborted")
+            return
+        if name is None: name = self.model_name
+        if Path(name).suffix != ".pt":
+            name += ".pt"
+        torch.save(self.model.state_dict(),self.save_path/name)
+    
+    def load_model(self, name=None, configure_optimizer=True, map_location=None):
+        """
+        Loads the model's state dict from given path.
+        ----
+        PARAMETERS
+        path : Load path, default is "fitloop_state/model.pt"
+        configure_optimizer : calls the function if true to set param_groups
+        map_location : kwarg passed to torch.load, defaults to self.device
+        """
+        if name is None: name = self.model_name
+        if map_location is None: map_location = self.device
+        if Path(name).suffix != ".pt":
+            name += ".pt"
+        path = self.save_path/name
+        self.model.load_state_dict(torch.load(path,map_location=device))
+        if self.configure_optimizer is None or not configure_optimizer:
             print("please reconfigure FitLoop.optimizer before training")
         else:
             self.configure_optimizer(self)
     
     def reset(self, reset_model:bool=True) -> None:
         """
+        NotImplemented:
+            Use `FitLoop.save` and `FitLoop.load`
+            instead.
+        
         Resets FitLoop to initial state.
         Parameters reset:
             - model, to pretrained state if `reset_model`
@@ -861,6 +931,7 @@ class FitLoop:
             - best_score to ∓inf
         FitLoop.optimizer param groups will have to be set again
         """
+        raise NotImplementedError("..under construction")
         if reset_model:
             self.__load_model(self._PR)
         self.epoch_num = 0
@@ -875,21 +946,88 @@ class FitLoop:
     Functions to preserve the FitLoop object state so that training can be resumed.
     """
     
-    def save(self, path, only_model=False):
+    def save(self, name=None):
         """
-        TODO : save the FitLoop state, if only_model then save only model.
+        Saves the state of components in a fitloop, 
+        includes: optimizer, model, lr_scheduler states.
+        ----
+        PARAMETERS
+        name : default is "state.pt", save location is the 
+            save_path kwarg which defaults to "fitloop_state"
+            
         """
-        print("NOT IMPLEMENTED YET")
-        pass
+        if not self.save_to_disk:
+            logging.warn("save_to_disk=False; save aborted")
+            return
+        if name is None: name = self.state_name
+        if Path(name).suffix != ".pt":
+            name += ".pt"
+        if name is not None: self._state_name = name
+        sd = {}
+        sd["model"] = self.model.state_dict()
+        sd["best_score"] = self.best_score
+        sd["epoch_num"] = self.epoch_num
+        sd["best_model_name"] = self.best_model_name
+        sd["pretrained_model_name"] = self.pretrained_model_name
+        sd["metrics"] = self.metrics
+        if isinstance(self.optimizer,list):
+            sd["optimizer"] = []
+            for opt in self.optimizer:
+                sd["optimizer"].append(opt.state_dict())
+        else:
+            sd["optimizer"] = self.optimizer.state_dict()
+        if self.lr_scheduler is not None:
+            if isinstance(self.lr_scheduler,list):
+                sd["lr_scheduler"] = []
+                for sch in self.lr_scheduler:
+                    sd["lr_scheduler"].append(sch.state_dict())
+            else:
+                sd["lr_scheduler"] = self.lr_scheduler.state_dict()
+        
+        torch.save(sd,self.save_path/name)
+            
+    def load(self, path=None,map_location=None):
+        """
+        Loads the state of components in a fitloop from path.
+        ----
+        PARAMETERS
+        path : default is "fitloop_state/state.pt".
+        map_location : kwarg passed to torch.load, defaults to self.device
+        """
+        if path is None and self._state_name is not None:
+            path = (self.save_path/self._state_name)
+        elif path is None: 
+            path = (self.save_path/self.state_name)
+        if map_location is None: map_location = self.device
+        sd = torch.load(path, map_location=map_location)
+        self.model.load_state_dict(sd["model"])
+        self.best_score = sd["best_score"]
+        self.epoch_num = sd["epoch_num"]
+        self.best_model_name = sd["best_model_name"]
+        self.pretrained_model_name = sd["pretrained_model_name"]
+        self.metrics = sd["metrics"]
+        if isinstance(self.optimizer,list):
+            for optsd,opt in zip(sd["optimizer"],self.optimizer):
+                opt.load_state_dict(optsd)
+        else:
+            self.optimizer.load_state_dict(sd["optimizer"])
+        if self.lr_scheduler is not None:
+            if isinstance(self.lr_scheduler,list):
+                for schsd,sch in zip(sd["lr_scheduler"],self.lr_scheduler):
+                    sch.load_state_dict(schsd)
+            else:
+                self.lr_scheduler.load_state_dict(sd["lr_scheduler"])
+            
+    def _precheck_save(self):
+        # To be used before checkup runs.
+        self.save(self.temp_state_name)
     
-    def load(self, path):
-        """
-        TODO : load the FitLoop state, if only model then load the model 
-            state dict.
-        """
-        print("NOT IMPLEMENTED YET")
-        pass
-    
+    def _postcheck_load(self):
+        # To be used after checkup runs.
+        path = self.save_path/self.temp_state_name
+        self.load(path)
+        path.unlink() # Delete temp file
+        
     
     # ---------------------------------------------------------------------
     """
@@ -897,6 +1035,23 @@ class FitLoop:
     
     Functions to delete stored model weights.
     """
+    def delete(self, name=None, state=False):
+        """
+        Deletes the model from save_path.
+        Default name = 'model.pt'
+        If state=True, deletes the last saved state.
+        """
+        if state:
+            if name is None:
+                if self._state_name is not None:
+                    name = self._state_name
+                else:
+                    name = self.state_name
+        else:
+            if name is None: name = self.model_name
+            if Path(name).suffix != ".pt":
+                name += ".pt"
+        (self.save_path/name).unlink()
     
     def del_pretrained_model(self) -> None:
         """
@@ -904,9 +1059,9 @@ class FitLoop:
         `save_to_disk` else states attribute to None
         """
         if self.save_to_disk:
-            (self.save_path/self.pretrained_model_name).unlink()
+            self.del_model(self.pretrained_model_name)
         else:
-            self.pretrained_model_state_dict = None
+            del self.pretrained_model_state_dict
         
     def del_best_model(self) -> None:
         """
@@ -914,9 +1069,9 @@ class FitLoop:
         `save_to_disk` else states attribute to None
         """
         if self.save_to_disk:
-            (self.save_path/self.best_model_name).unlink()
+            self.del_model(self.best_model_name)
         else:
-            self.best_model_state_dict = None
+            del self.best_model_state_dict
             
     # ---------------------------------------------------------------------
     """

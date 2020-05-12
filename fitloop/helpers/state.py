@@ -81,14 +81,6 @@ class LoopState:
     """
     def _append(self, rdict:Dict[str, float], stage:str) -> None:
         #  Append metrics to the specific stage.
-        if rdict is None:
-            if stage == self._epoch_end:
-                print(f"no rdict returned from: f{self.phase}_{stage}")
-            """
-            TODO: Add warning if rdict of stage is None
-            """
-            return
-        
         for key in rdict:
             if key not in self.metrics[stage]:
                 self.metrics[stage][key] = []

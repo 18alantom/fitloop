@@ -6,6 +6,7 @@ temp/
 temp.*
 *.temp
 test.ipynb
+fitloop_state/
 
 # VS code settings
 .vscode/
