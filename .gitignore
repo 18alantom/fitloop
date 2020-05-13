@@ -7,6 +7,7 @@ temp.*
 *.temp
 test.ipynb
 fitloop_state/
+todo.txt
 
 # VS code settings
 .vscode/

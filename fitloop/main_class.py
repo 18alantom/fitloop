@@ -75,12 +75,12 @@ class FitLoop:
             for model score criteria.
     
     # Model Preservation
-        - save_to_disk : True then save pretrained and best_model to the disk, else it is 
-            stored as an attribute.
-        - save_path : location where the initial and pretrained models are to be saved
-        - pretrained_model_name : Name to save the pretrained model by, defaults to a
-            generated uuid.
-        - best_model_name : Name to save the best model by, defaults to a generated uuid.
+        - save_to_disk : True then save state and models to the disk, else best_model
+            state_dict is stored as an attribute and state can't be saved.
+        - save_path : location to where models and state are saved if `save_to_disk` is
+            `True`
+        - best_model_name : Name to save the best model by, defaults to a random string 
+            appended name.
     """
     
     # ---------------------------------------------------------------------
@@ -137,7 +137,6 @@ class FitLoop:
                  # Model Preservation
                  save_to_disk: bool=True,
                  save_path: str="fitloop_state",
-                 pretrained_model_name: Optional[str]=None,
                  best_model_name: Optional[str]=None,
                 ) -> None:
         # Basic Blocks
@@ -181,32 +180,25 @@ class FitLoop:
         
         
         # Model Preservation
-        if pretrained_model_name is None:
-            u = str(uuid4()).split('-')[1]
-            pretrained_model_name = f"pretrained_{u}.pt"
         if best_model_name is None:
             u = str(uuid4()).split('-')[1]
             best_model_name = f"best_{u}.pt"
-        self.pretrained_model_name = pretrained_model_name
         self.best_model_name = best_model_name
         self.save_to_disk = save_to_disk
         self.save_path = Path(save_path)
-        if self.save_to_disk and not self.save_path.exists():
-            self.save_path.mkdir()
         
         # INITIALIZE NON ARGS
         self.best_model_state_dict = None
-        self.pretrained_model_state_dict = None
         self.epoch_num = 0
         self.best_score = self.criteria_direction * float('-inf')
         self.time_profile = {}
         self.metrics = MetricsAggregator()
-        self._state_name = None
-        self.temp_state_name = "temp.pt"
+        self._temp_state_name = "_temp_state.pt"
+        self._temp_model_name = "_temp_model.pt"
         self.state_name = "state.pt"
         self.model_name = "model.pt"
-        self.initial_state = "initial.pt"
         self._temp = None
+        self._temp_state_dict = None
         
         # Change criteria if defaults are being used
         if self.valid_step is FitLoopDefaults.valid_step:
@@ -338,9 +330,9 @@ class FitLoop:
                     self.time_profile[a][b] = []
                 self.time_profile[a][b].append(t)
                 
-    def print_time_profile(self):
+    def _print_time_profile(self):
         if len(self.time_profile) == 0:
-            print("please run FitLoop.run_profiler(print_outcome=False) first")
+            logging.error("please run FitLoop.run_profiler(print_outcome=False) first")
         else:
             print("AVERAGE TIMES")
             for i,m in enumerate(self.time_profile):
@@ -433,7 +425,7 @@ class FitLoop:
         state = {ph: LoopState(ph,self,no_cast,no_float,is_train, is_test, dl[ph]) for ph in phases}
 
         # Markers
-        self.__save_model(self._BS)
+        self.__save_model()
         
         # TQDM Progressbar
         tot_size = torch.tensor([len(dl[d]) for d in dl]).sum().long().item()
@@ -577,7 +569,7 @@ class FitLoop:
                     is_better = (score > self.best_score) if direc else (score < self.best_score)
                     if is_better:
                         self.best_score = score
-                        self.__save_model(self._BS)
+                        self.__save_model()
 
                 # PRINT EPOCH[PHASE] METRICS
                 epoch_metrics = state[phase]._get_epoch_metrics(display_metrics)
@@ -627,7 +619,7 @@ class FitLoop:
         # RESTORE BEST MODEL
         prof_restore_model = tpr() # ⏳
         if load_best:
-            self.__load_model(self._BS)
+            self.__load_model()
         profiler and _profile_time(prof_restore_model,tpr(),f'restore model') # ⏳
 
         self.metrics._complete_run((is_sanity_check or profiler),is_test)
@@ -710,13 +702,25 @@ class FitLoop:
 
     Loop methods for (sort of) unit testing and timing of components.
     """
-    def _checkup(self, start:bool)->None:
-        if start:
+    def _checkup(self)->None:
+        """
+        Handles switching attributes pertaining to best model 
+        during checkup.
+        """
+        if self._temp is None:
             self._temp = self.best_model_name
-            self.best_model_name = "_checkupmodel.pt"
-        else:
+            self.best_model_name = self._temp_model_name
+            if self.best_model_state_dict is not None:
+                self._temp_state_dict = self.best_model_state_dict
+        elif self._temp is not None:
+            self.del_best_model()
             self.best_model_name = self._temp
+            self.best_model_state_dict = self._temp_state_dict
             self._temp = None
+            self._temp_state_dict = None
+        else:
+            logging.error("unreachable statement from [_checkup] has been reached")
+
 
     def run_profiler(self,
             epochs:Optional[int]=1, steps: Optional[int]=None, define_all:bool=False,
@@ -724,7 +728,7 @@ class FitLoop:
             train_dl:Optional[DataLoader]=None,
             valid_dl:Optional[DataLoader]=None,
             test_dl:Optional[DataLoader]=None
-            ) -> Dict[str,Union[Dict[str,List[float]],List[float]]]:
+            ) -> Optional[Dict[str,Union[Dict[str,List[float]],List[float]]]]:
         """
         NOTE: -- Note Very Accurate -- Need to switch profiling method.
         
@@ -747,7 +751,7 @@ class FitLoop:
          - no_cast : True, if data casting has to be manually set in the stage functions
          - no_float : True don't apply float conversion to returned metrics.
          - no_progress : True, don't show the progress bar.
-         - print_outcome : If False won't print profiler outcome, can be accesed from FitLoop.time_profile
+         - print_outcome : If `False` won't print profiler outcome, the values are returned as a dict.
          - train_dl : Will use this instead of DatLoader passed in the constructor call.
          - valid_dl : Will use this instead of DatLoader passed in the constructor call.
          - test_dl : Will use this instead of DatLoader passed in the constructor call.
@@ -756,8 +760,9 @@ class FitLoop:
             logging.warn("save_to_disk=False; precheck save not possible; profiling aborted")
             return
         
-        self._checkup(True)
+        # Precheck save state and change best model name
         self._precheck_save()
+
         t1 = time.perf_counter()
         try:
             self.__loop(epochs=epochs,steps=steps, define_all=define_all, no_cast=no_cast, 
@@ -769,18 +774,19 @@ class FitLoop:
                             test_dl=test_dl, is_test=True)
         except Exception as e:
             logging.error(f"error occured: {repr(e)}")
-        self.del_best_model()
-        self._checkup(False)
         st = ptime(time.perf_counter() - t1)
+
+        # Postcheck load state and delete and change best model name
         self._postcheck_load()
+
         if print_outcome:
-            self.print_time_profile()
-            time_profile = self.time_profile
+            self._print_time_profile()
             self.time_profile = {}
             print(f"\ntotal time: {st}")
-            return time_profile
         else:
-            return self.time_profile
+            time_profile = self.time_profile
+            self.time_profile = {}
+            return time_profile
     
     def run_sanity_check(self, epochs:int=1, 
             steps:int=3, print_every:int=1, use_test_dl=False,
@@ -824,8 +830,9 @@ class FitLoop:
             logging.warn("save_to_disk=False; precheck save not possible; sanity check aborted")
             return
         
-        self._checkup(True)
+        # Precheck save state and change best model name
         self._precheck_save()
+
         try:
             print(f"RUNNING SANITY CHECK: TRAIN LOOP - {epochs} EPOCH(s), {steps} STEP(s)")
             self.__loop(epochs=epochs, steps=steps, print_every=print_every, 
@@ -845,8 +852,8 @@ class FitLoop:
                             is_sanity_check=True, is_test=True)
         except Exception as e:
             logging.error(f"error occured: {repr(e)}")
-        self.del_best_model()
-        self._checkup(False)
+
+        # Postcheck load state and delete and change best model name
         self._postcheck_load()
     
     
@@ -856,102 +863,95 @@ class FitLoop:
     
     Functions to preserve the model state.
     """
-    
-    # Internal Use
-    def __save_model(self, typ:str) -> None:
-        """
-        Save model to object or to the disk.
-        """
-        name = self.best_model_name if typ == self._BS else self.pretrained_model_name
-        if self.save_to_disk:
-            self.save_model(name)
-        else:
-            path = self.save_path/ name
-            state_dict = deepcopy(self._model.state_dict())
+    def _is_save_safe(self, path):
+        return not path.exists()
 
-            if typ == self._BS:
-                self.best_model_state_dict = state_dict
-            elif typ == self._PR:
-                self.pretrained_model_state_dict = state_dict
-            else:
-                logging.warning("model save failed")
-        
-    def __load_model(self, typ:str):
+    def _get_path(self, name, default_name, path):
+
+        if name is None: name = default_name
+        if path is None: path = self.save_path
+
+        path = Path(path)
+        if not path.exists():
+            path.mkdir(parents=True)
+
+        if Path(name).suffix != ".pt":
+            name += ".pt"
+        return path/name
+    
+    # Internal Use for best model checkpointing
+    def __save_model(self) -> None:
         """
-        Load model from the object or from the disk.
+        For use with model checkpointing using `FitLoop.criteria`.
         """
-        name = self.best_model_name if typ == self._BS else self.pretrained_model_name
         if self.save_to_disk:
-            self.load_model(name)
+            self.save_model(self.best_model_name, override=True)
         else:
-            path = self.save_path/ name
-            if typ == self._BS:
-                state_dict = self.best_model_state_dict
-            else:
-                state_dict = self.pretrained_model_state_dict
+            state_dict = deepcopy(self._model.state_dict())
+            self.best_model_state_dict = state_dict
+        
+    def __load_model(self):
+        """
+        For use with model checkpointing using `FitLoop.criteria`.
+        """
+        if self.save_to_disk:
+            self.load_model(self.best_model_name)
+        else:
+            state_dict = self.best_model_state_dict
             self._model.load_state_dict(state_dict)
+            self.best_model_state_dict = None
+
             if self.configure_optimizer is None:
-                print("please reconfigure FitLoop.optimizer before training")
+                logging.warning("please reconfigure FitLoop.optimizer before training")
             else:
                 self.configure_optimizer(self)
     
     # API
-    def save_model(self, name=None):
+    def save_model(self, name:Optional[str]=None, path:Optional[Union[str,Path]]=None, override:bool=False):
         """
-        Saves the model's state dict to the given path.
+        Saves the model's state dict.
         ----
         PARAMETERS
-        path : Load path, default is "fitloop_state/model.pt"
-        configure_optimizer : calls the function if true to set param_groups
+        name : name of the model to be saved; default=`"model.pt"`
+        path : path where to save the model; default=`FitLoop.save_path`
+        override : override save warning if file exists.
         """
         if not self.save_to_disk:
-            logging.warn("save_to_disk=False; save model aborted")
+            logging.warning("save_to_disk=False; save model aborted")
             return
-        if name is None: name = self.model_name
-        if Path(name).suffix != ".pt":
-            name += ".pt"
-        torch.save(self.model.state_dict(),self.save_path/name)
+
+        path = self._get_path(name, self.model_name, path)
+
+        if not self._is_save_safe(path) and not override:
+            logging.warning("save aborted; file exists; to save set override=True")
+            return
+
+        torch.save(self.model.state_dict(), path)
     
-    def load_model(self, name=None, configure_optimizer=True, map_location=None):
+    def load_model(self, name:Optional[str]=None, path:Optional[Union[str,Path]]=None, configure_optimizer:bool=True, 
+            map_location:torch.device=None, override:bool=False):
         """
-        Loads the model's state dict from given path.
+        Loads the model's state dict.
         ----
         PARAMETERS
-        path : Load path, default is "fitloop_state/model.pt"
-        configure_optimizer : calls the function if true to set param_groups
-        map_location : kwarg passed to torch.load, defaults to self.device
+        name : name of the model to be loaded; default=`"model.pt"`
+        path : path where to save the model; default=`FitLoop.save_path`
+        configure_optimizer : calls `FitLoop.configure_optimizer` if `True` to set param_groups
+        map_location : kwarg passed to torch.load, defaults to `self.device`
+        override : load state despite `save_to_disk=False`
         """
-        if name is None: name = self.model_name
+        if not self.save_to_disk or override:
+            logging.warning("save_to_disk=False; load model failed")
+            return
+
+        path = self._get_path(name, self.model_name, path)
         if map_location is None: map_location = self.device
-        if Path(name).suffix != ".pt":
-            name += ".pt"
-        path = self.save_path/name
         self.model.load_state_dict(torch.load(path,map_location=map_location))
         if self.configure_optimizer is None or not configure_optimizer:
-            print("please reconfigure FitLoop.optimizer before training")
+            logging.warning("please reconfigure FitLoop.optimizer before training")
         else:
             self.configure_optimizer(self)
-    
-    def reset(self, reset_model:bool=True) -> None:
-        """
-        NotImplemented:
-            Use `FitLoop.save` and `FitLoop.load`
-            instead.
-        
-        Resets FitLoop to initial state.
-        Parameters reset:
-            - model, to pretrained state if `reset_model`
-            - epoch_num, to 0
-            - best_score to ∓inf
-        FitLoop.optimizer param groups will have to be set again
-        """
-        raise NotImplementedError("..under construction")
-        if reset_model:
-            self.__load_model(self._PR)
-        self.epoch_num = 0
-        self.best_score = self.criteria_direction * float('-inf')
-        self.metrics = MetricsAggregator()
-        
+
         
     # ---------------------------------------------------------------------
     """
@@ -960,29 +960,30 @@ class FitLoop:
     Functions to preserve the FitLoop object state so that training can be resumed.
     """
     
-    def save(self, name=None):
+    def save(self, name=None, path=None, override=False):
         """
         Saves the state of components in a fitloop, 
         includes: optimizer, model, lr_scheduler states.
         ----
         PARAMETERS
-        name : default is "state.pt", save location is the 
-            save_path kwarg which defaults to "fitloop_state"
-            
+        name : name of the fitloop state to be saved; default=`"state.pt"`
+        path : path where to save the state; default=`FitLoop.save_path`
+        override : override save warning if file exists.
         """
         if not self.save_to_disk:
-            logging.warn("save_to_disk=False; save aborted")
+            logging.warning("save_to_disk=False; save failed")
             return
-        if name is None: name = self.state_name
-        if Path(name).suffix != ".pt":
-            name += ".pt"
-        if name is not None: self._state_name = name
+        path = self._get_path(name, self.state_name, path)
+
+        if not self._is_save_safe(path) and not override:
+            logging.warning("save aborted; file exists; to save set override=True")
+            return
+
         sd = {}
         sd["model"] = self.model.state_dict()
         sd["best_score"] = self.best_score
         sd["epoch_num"] = self.epoch_num
         sd["best_model_name"] = self.best_model_name
-        sd["pretrained_model_name"] = self.pretrained_model_name
         sd["metrics"] = self.metrics
         if isinstance(self.optimizer,list):
             sd["optimizer"] = []
@@ -998,27 +999,30 @@ class FitLoop:
             else:
                 sd["lr_scheduler"] = self.lr_scheduler.state_dict()
         
-        torch.save(sd,self.save_path/name)
+        torch.save(sd, path)
             
-    def load(self, path=None,map_location=None):
+    def load(self, name=None, path=None, map_location=None, override=False):
         """
         Loads the state of components in a fitloop from path.
         ----
         PARAMETERS
-        path : default is "fitloop_state/state.pt".
-        map_location : kwarg passed to torch.load, defaults to self.device
+        name : name of the fitloop state to be loaded; default=`"state.pt"`
+        path : path from where to load the state; default=`FitLoop.save_path`
+        map_location : kwarg passed to torch.load; default=`FitLoop.device`
+        override : load state despite `save_to_disk=False`
         """
-        if path is None and self._state_name is not None:
-            path = (self.save_path/self._state_name)
-        elif path is None: 
-            path = (self.save_path/self.state_name)
+        if not self.save_to_disk or override:
+            logging.warning("save_to_disk=False; load failed")
+            return
+
+        path = self._get_path(name, self.state_name, path)
         if map_location is None: map_location = self.device
+
         sd = torch.load(path, map_location=map_location)
         self.model.load_state_dict(sd["model"])
         self.best_score = sd["best_score"]
         self.epoch_num = sd["epoch_num"]
         self.best_model_name = sd["best_model_name"]
-        self.pretrained_model_name = sd["pretrained_model_name"]
         self.metrics = sd["metrics"]
         if isinstance(self.optimizer,list):
             for optsd,opt in zip(sd["optimizer"],self.optimizer):
@@ -1034,13 +1038,18 @@ class FitLoop:
             
     def _precheck_save(self):
         # To be used before checkup runs.
-        self.save(self.temp_state_name)
+        self.save(self._temp_state_name,override=True)
+        self._checkup()
     
     def _postcheck_load(self):
         # To be used after checkup runs.
-        path = self.save_path/self.temp_state_name
-        self.load(path)
-        path.unlink() # Delete temp file
+        self._checkup()
+        self.load(self._temp_state_name)
+        path = self._get_path(None, self._temp_state_name, None)
+        try:
+            path.unlink() # Delete temp file
+        except:
+            pass
         
     
     # ---------------------------------------------------------------------
@@ -1049,44 +1058,27 @@ class FitLoop:
     
     Functions to delete stored model weights.
     """
-    def delete(self, name=None, state=False):
+    def delete(self, name, path=None):
         """
-        Deletes the model from save_path.
-        Default name = 'model.pt'
-        If state=True, deletes the last saved state.
+        Deletes the model/state (.pt files).
+        ----
+        PARAMETERS
+        name : name of the file to be loaded; no defaults to prevent erroneous deletion.
+        path : path of the file to be deleted; default=`FitLoop.save_path`
         """
-        if state:
-            if name is None:
-                if self._state_name is not None:
-                    name = self._state_name
-                else:
-                    name = self.state_name
-        else:
-            if name is None: name = self.model_name
-            if Path(name).suffix != ".pt":
-                name += ".pt"
-        (self.save_path/name).unlink()
+        path = self._get_path(name, self.state_name, path)
+        path.unlink()
     
-    def del_pretrained_model(self) -> None:
-        """
-        Deletes the pretrianed model state dict from the disk if 
-        `save_to_disk` else states attribute to None
-        """
-        if self.save_to_disk:
-            self.delete(self.pretrained_model_name)
-        else:
-            del self.pretrained_model_state_dict
-        
     def del_best_model(self) -> None:
         """
         Deletes the best model state dict from the disk if 
-        `save_to_disk` else states attribute to None
+        `save_to_disk` else sets attribute to None
         """
         if self.save_to_disk:
             self.delete(self.best_model_name)
         else:
-            del self.best_model_state_dict
-            
+            self.best_model_state_dict = None
+    
     # ---------------------------------------------------------------------
     """
     SECTION: 7
