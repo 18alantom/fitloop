@@ -82,7 +82,13 @@ class Metrics:
                     val = float(val)
                 except:
                     pass
-            self_stage[key][self._runs - 1].append(val)
+            try:
+                self_stage[key][self._runs - 1].append(val)
+            except:
+                # For : If a metric is newly add such as when a 
+                # stage function is changed.
+                self_stage[key][-1].append(val)
+
     
     def clear(self):
         """

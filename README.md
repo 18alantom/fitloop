@@ -15,22 +15,12 @@ Training a model using `fitloop` for 10 epochs.
 ```python
 from fitloop import FitLoop
 
-def configure_optimizer(floop):
-    floop.optimizer.param_groups.clear()
-    floop.optimizer.add_param_group({
-        'params':floop.model.parameters()
-    })
-
-params = model.parameters()
-
 fdict = {
     "model": model,
     "loss_function": nn.CrossEntropyLoss(),
-    "optimizer": Adam(params),
+    "optimizer": Adam(model.parameters()),
     "train_dl": train_dl,
-    "configure_optimizer": configure_optimizer
 }
-
 trainer = FitLoop(**fdict)
 trainer.fit(epochs=10)
 ```
@@ -73,7 +63,6 @@ For the most basic usage of `fitloop`  the few things that need to be defined ar
 - `model` - the Pytorch [model](https://pytorch.org/docs/stable/nn.html#module) that needs to be trained.
 - `optimizer` - Pytorch [optimizer](https://pytorch.org/docs/stable/optim.html#torch.optim.Optimizer) that is used to optimize the model.
 - `loss_function` - A [loss](https://en.wikipedia.org/wiki/Loss_function) [function](https://pytorch.org/docs/stable/nn.html#crossentropyloss) for computing.. you guessed it, loss.
-- `configure_optimizer` - A function that is used to configure the optimizer parameters so that the model is ready to train when it is loaded or restored.
 - `train_dl` - [DataLoader](https://pytorch.org/docs/stable/data.html#torch.utils.data.DataLoader) for training the model.
 
 For extending the usage beyond basic a few more additional components are required.
@@ -81,7 +70,7 @@ For extending the usage beyond basic a few more additional components are requir
 - `test_dl` - [DataLoader](https://pytorch.org/docs/stable/data.html#torch.utils.data.DataLoader) for testing the model.
 - *stage functions* - A set of functions that are called at different stages throughout the loop.
 - `criteria` - name of the validation criteria that is used to evaluate the model, this is a value that is returned from the state dict.
-
+- `configure_optimizer` - A function that is used to configure the optimizer parameters so that the model is ready to train when it is loaded or restored, the default one can only be used for single optimizers and single lr_schedulers.
 
 ## Configure Optimizer
 ```python
@@ -204,3 +193,8 @@ Calling `FitLoop.test()` will run the loop in test mode ie for one epoch with th
 ---
 
 For additional functionalities such as loading and restoring models, resetting, sanity checks, profiler check [Usage.ipynb](https://github.com/18alantom/fitloop/blob/master/examples/Usage.ipynb)
+
+---
+**TODO**
+- Create better documentation.
+- Update examples.
