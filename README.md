@@ -165,9 +165,6 @@ fdict = {
     
     # Model Evaluation
     "criteria": "accuracy", # Returned in valid_epoch_end stage function dict
-    
-    # Model Preservation
-    "save_to_disk": True # Will save pretrained and best model to disk
 
     # Param Restoration/Update
     "configure_optimizer":configure_optimizer,
