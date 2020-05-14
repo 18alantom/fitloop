@@ -12,8 +12,10 @@ from tqdm.autonotebook import tqdm
 from fitloop.helpers.state import LoopState
 from fitloop.helpers.helpers import ftime, ptime
 from fitloop.helpers.metrics import MetricsAggregator
-from fitloop.helpers.defaults import FitLoopDefaults
 from fitloop.main_constants import *
+from fitloop.defaults.batch_step import DefaultBatchStep
+from fitloop.defaults.epoch_end import DefaultEpochEnd
+from fitloop.defaults.configure_optimizer import configure_optimizer
 
 class FitLoop:
     """
@@ -106,9 +108,9 @@ class FitLoop:
                  test_dl: Optional[DataLoader]=None, 
                  
                  # Batch Step
-                 train_step: Callable[[LoopState],Dict[str, Any]]=FitLoopDefaults.train_step,
-                 valid_step: Optional[Callable[[LoopState],Dict[str, Any]]]=FitLoopDefaults.valid_step,
-                 test_step: Optional[Callable[[LoopState],Dict[str, Any]]]=FitLoopDefaults.test_step,
+                 train_step: Callable[[LoopState],Dict[str, Any]]=DefaultBatchStep.train_step,
+                 valid_step: Optional[Callable[[LoopState],Dict[str, Any]]]=DefaultBatchStep.valid_step,
+                 test_step: Optional[Callable[[LoopState],Dict[str, Any]]]=None,
                  
                  # Epoch Start Step
                  train_epoch_start: Optional[Callable[[LoopState],Dict[str, Any]]]=None,
@@ -116,9 +118,9 @@ class FitLoop:
                  test_epoch_start: Optional[Callable[[LoopState],Dict[str, Any]]]=None,
                  
                  # Epoch End Step
-                 train_epoch_end: Callable[[LoopState],Dict[str, Any]]=FitLoopDefaults.train_epoch_end,
-                 valid_epoch_end: Optional[Callable[[LoopState],Dict[str, Any]]]=FitLoopDefaults.valid_epoch_end,
-                 test_epoch_end: Optional[Callable[[LoopState],Dict[str, Any]]]=FitLoopDefaults.test_epoch_end,
+                 train_epoch_end: Callable[[LoopState],Dict[str, Any]]=DefaultEpochEnd.train_epoch_end,
+                 valid_epoch_end: Optional[Callable[[LoopState],Dict[str, Any]]]=DefaultEpochEnd.valid_epoch_end,
+                 test_epoch_end: Optional[Callable[[LoopState],Dict[str, Any]]]=None,
                  
                  # Other Stage Functions
                  preloop: Optional[Callable[[dict],None]]=None,
@@ -127,7 +129,7 @@ class FitLoop:
                  # Other Args
                  lr_scheduler: Optional[Union[LRScheduler, Any, List[Union[LRScheduler,Any]]]]=None,
                  device: torch.device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'), 
-                 configure_optimizer:Callable[[object],None]=None,
+                 configure_optimizer:Callable[[object],None]=configure_optimizer,
                  dtype: torch.dtype=torch.float32,
                  
                  # Model Evaluation
@@ -201,8 +203,8 @@ class FitLoop:
         self._temp_state_dict = None
         
         # Change criteria if defaults are being used
-        if self.valid_step is FitLoopDefaults.valid_step:
-            self.criteria = FitLoopDefaults.criteria
+        if self.valid_epoch_end is DefaultEpochEnd.valid_epoch_end:
+            self.criteria = DefaultEpochEnd.criteria
             
         # Basic Blocks - Calling model setter
         self.model = model
@@ -425,7 +427,7 @@ class FitLoop:
         state = {ph: LoopState(ph,self,no_cast,no_float,is_train, is_test, dl[ph]) for ph in phases}
 
         # Markers
-        self.__save_model()
+        self.__save_best()
         
         # TQDM Progressbar
         tot_size = torch.tensor([len(dl[d]) for d in dl]).sum().long().item()
@@ -569,7 +571,7 @@ class FitLoop:
                     is_better = (score > self.best_score) if direc else (score < self.best_score)
                     if is_better:
                         self.best_score = score
-                        self.__save_model()
+                        self.__save_best()
 
                 # PRINT EPOCH[PHASE] METRICS
                 epoch_metrics = state[phase]._get_epoch_metrics(display_metrics)
@@ -619,7 +621,7 @@ class FitLoop:
         # RESTORE BEST MODEL
         prof_restore_model = tpr() # ⏳
         if load_best:
-            self.__load_model()
+            self.__load_best()
         profiler and _profile_time(prof_restore_model,tpr(),f'restore model') # ⏳
 
         self.metrics._complete_run((is_sanity_check or profiler),is_test)
@@ -768,7 +770,7 @@ class FitLoop:
             self.__loop(epochs=epochs,steps=steps, define_all=define_all, no_cast=no_cast, 
                         no_float=no_float, no_print=True, no_progress=no_progress, 
                         train_dl=train_dl, valid_dl=valid_dl, profiler=True)
-            if self.test_dl is not None or test_dl is not None:
+            if (self.test_dl is not None or test_dl is not None) and (self.test_step is not None):
                 self.__loop(steps=steps, define_all=define_all, no_cast=no_cast, 
                             no_float=no_float, no_print=True, no_progress=no_progress, profiler=True, 
                             test_dl=test_dl, is_test=True)
@@ -841,7 +843,7 @@ class FitLoop:
                         no_float=no_float, no_progress=no_progress, 
                         train_dl=train_dl,valid_dl=valid_dl,
                         is_sanity_check=True)
-            if self.test_dl is not None or test_dl is not None:
+            if (self.test_dl is not None or test_dl is not None and not use_test_dl) and (self.test_step is not None):
                 print()
                 print(f"RUNNING SANITY CHECK: TEST LOOP - {steps} STEP(s)")
                 self.__loop(use_test_dl=use_test_dl, steps=steps, print_every=print_every, 
@@ -880,7 +882,7 @@ class FitLoop:
         return path/name
     
     # Internal Use for best model checkpointing
-    def __save_model(self) -> None:
+    def __save_best(self) -> None:
         """
         For use with model checkpointing using `FitLoop.criteria`.
         """
@@ -890,7 +892,7 @@ class FitLoop:
             state_dict = deepcopy(self._model.state_dict())
             self.best_model_state_dict = state_dict
         
-    def __load_model(self):
+    def __load_best(self):
         """
         For use with model checkpointing using `FitLoop.criteria`.
         """
