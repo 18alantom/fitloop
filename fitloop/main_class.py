@@ -16,6 +16,7 @@ from fitloop.main_constants import *
 from fitloop.defaults.batch_step import DefaultBatchStep
 from fitloop.defaults.epoch_end import DefaultEpochEnd
 from fitloop.defaults.configure_optimizer import configure_optimizer
+from fitloop.helpers.utils import get_layers
 
 class FitLoop:
     """
@@ -474,7 +475,15 @@ class FitLoop:
 
         # Function for phase strings.
         def statstr(phase, epoch_metrics, rjust=True):
-            mt = ' | '.join([f"{m}: {epoch_metrics[m]:0.4f}"for m in epoch_metrics])
+            em = []
+            for m in epoch_metrics:
+                val = epoch_metrics[m]
+                if isinstance(val, float):
+                    em.append(f"{m}: {val:0.4f}")
+                else:
+                    em.append(f"{m}: {val}")
+
+            mt = ' | '.join(em)
             st =  f"{phase} :: {mt} \n"
             if rjust:
                 return st.rjust(r_just_val + len(st) + 3)
@@ -568,17 +577,18 @@ class FitLoop:
                 if not (is_tr or is_test) and self.criteria is not None:
                     score = state[phase]._get_epoch_metric(self.criteria)
                     direc = self.criteria_direction > 0
-                    is_better = (score > self.best_score) if direc else (score < self.best_score)
+                    is_better = (score >= self.best_score) if direc else (score <= self.best_score)
                     if is_better:
                         self.best_score = score
                         self.__save_best()
 
                 # PRINT EPOCH[PHASE] METRICS
                 epoch_metrics = state[phase]._get_epoch_metrics(display_metrics)
-                if is_tr or is_test:
-                    eprint(e,statstr(phase, epoch_metrics,False))
-                else:
-                    eprint(e,statstr(phase, epoch_metrics))
+                if len(epoch_metrics):
+                    if is_tr or is_test:
+                        eprint(e,statstr(phase, epoch_metrics,False))
+                    else:
+                        eprint(e,statstr(phase, epoch_metrics))
                     
                 profiler and _profile_time(prof_phase_inner,tpr(),f'{phase}_phase_inner') # ⏳
                 
@@ -697,7 +707,12 @@ class FitLoop:
          - no_float : True don't apply float conversion to returned metrics.
          - no_progress : True, don't show the progress bar.
         """
-        self.__loop(is_test=True, no_print=no_print, no_cast=no_cast, no_float=no_float, test_dl=test_dl)
+        if self.test_dl is None and test_dl is None:
+            logging.error("no test_dl, test can't run")
+        elif self.test_step is  None:
+            logging.error("no test_step, test can't run")
+        else:
+            self.__loop(is_test=True, no_print=no_print, no_cast=no_cast, no_float=no_float, test_dl=test_dl)
         
     """
     SECTION: 3 - B
@@ -834,9 +849,9 @@ class FitLoop:
         
         # Precheck save state and change best model name
         self._precheck_save()
-
+        _steps = 'all' if steps is None else steps
         try:
-            print(f"RUNNING SANITY CHECK: TRAIN LOOP - {epochs} EPOCH(s), {steps} STEP(s)")
+            print(f"RUNNING SANITY CHECK: TRAIN LOOP - {epochs} EPOCH(s), {_steps} STEP(s)")
             self.__loop(epochs=epochs, steps=steps, print_every=print_every, 
                         display_metrics=display_metrics, continue_loop=continue_loop,
                         define_all=define_all, no_print=no_print, no_cast=no_cast, 
@@ -845,7 +860,7 @@ class FitLoop:
                         is_sanity_check=True)
             if (self.test_dl is not None or test_dl is not None and not use_test_dl) and (self.test_step is not None):
                 print()
-                print(f"RUNNING SANITY CHECK: TEST LOOP - {steps} STEP(s)")
+                print(f"RUNNING SANITY CHECK: TEST LOOP - {_steps} STEP(s)")
                 self.__loop(use_test_dl=use_test_dl, steps=steps, print_every=print_every, 
                             display_metrics=display_metrics, continue_loop=continue_loop,
                             define_all=define_all, no_print=no_print, no_cast=no_cast, 
@@ -912,6 +927,10 @@ class FitLoop:
     def save_model(self, name:Optional[str]=None, path:Optional[Union[str,Path]]=None, override:bool=False):
         """
         Saves the model's state dict.
+
+        *Note:* Doesn't save `requires_grad` attribute of the parameters,
+        this is default behaviour, to save gradient requirement use
+        `FitLoop.save`
         ----
         PARAMETERS
         name : name of the model to be saved; default=`"model.pt"`
@@ -966,6 +985,12 @@ class FitLoop:
         """
         Saves the state of components in a fitloop, 
         includes: optimizer, model, lr_scheduler states.
+
+        *Note:* Since the state dicts of `optimizer` and `lr_scheduler` are saved
+        if either is changed after loading eg: before loading `SGD` then switch to
+        `Adam` the load won't be able to revert this change and will try to load
+        the new Objects with the state dict. So before loading set the same `optimizer`
+        and `lr_scheduler`.
         ----
         PARAMETERS
         name : name of the fitloop state to be saved; default=`"state.pt"`
@@ -983,6 +1008,7 @@ class FitLoop:
 
         sd = {}
         sd["model"] = self.model.state_dict()
+        sd["unlocked"] = len([*get_layers(self.model,True)])
         sd["best_score"] = self.best_score
         sd["epoch_num"] = self.epoch_num
         sd["best_model_name"] = self.best_model_name
@@ -1000,12 +1026,20 @@ class FitLoop:
                     sd["lr_scheduler"].append(sch.state_dict())
             else:
                 sd["lr_scheduler"] = self.lr_scheduler.state_dict()
+        else:
+            sd["lr_scheduler"] = None
         
         torch.save(sd, path)
             
     def load(self, name=None, path=None, map_location=None, override=False):
         """
         Loads the state of components in a fitloop from path.
+
+        *Note:* Since the state dicts of `optimizer` and `lr_scheduler` are saved
+        if either is changed after loading eg: before loading `SGD` then switch to
+        `Adam` the load won't be able to revert this change and will try to load
+        the new Objects with the state dict. So before loading set the same `optimizer`
+        and `lr_scheduler`.
         ----
         PARAMETERS
         name : name of the fitloop state to be loaded; default=`"state.pt"`
@@ -1021,22 +1055,35 @@ class FitLoop:
         if map_location is None: map_location = self.device
 
         sd = torch.load(path, map_location=map_location)
+        unlocked = sd["unlocked"] 
         self.model.load_state_dict(sd["model"])
         self.best_score = sd["best_score"]
         self.epoch_num = sd["epoch_num"]
         self.best_model_name = sd["best_model_name"]
         self.metrics = sd["metrics"]
-        if isinstance(self.optimizer,list):
-            for optsd,opt in zip(sd["optimizer"],self.optimizer):
-                opt.load_state_dict(optsd)
-        else:
-            self.optimizer.load_state_dict(sd["optimizer"])
-        if self.lr_scheduler is not None:
-            if isinstance(self.lr_scheduler,list):
-                for schsd,sch in zip(sd["lr_scheduler"],self.lr_scheduler):
-                    sch.load_state_dict(schsd)
+        try:
+            if isinstance(self.optimizer,list):
+                for optsd,opt in zip(sd["optimizer"],self.optimizer):
+                    opt.load_state_dict(optsd)
             else:
-                self.lr_scheduler.load_state_dict(sd["lr_scheduler"])
+                self.optimizer.load_state_dict(sd["optimizer"])
+        except Exception as e:
+            logging.error(f"error while loading optimizer state_dict: {repr(e)}")
+        if sd["lr_scheduler"] is not None:
+            if self.lr_scheduler is not None:
+                try:
+                    if isinstance(self.lr_scheduler,list):
+                        for schsd,sch in zip(sd["lr_scheduler"],self.lr_scheduler):
+                            sch.load_state_dict(schsd)
+                    else:
+                        self.lr_scheduler.load_state_dict(sd["lr_scheduler"])
+                except Exception as e:
+                    logging.error(f"error while loading lr_scheduler state_dict: {repr(e)}")
+            else:
+                logging.warning("""lr_scheduler state dict found in saved state
+                but FitLoop.lr_scheduler is None, please set lr_scheduler 
+                and load again to load lr_scheduler state dict.""")
+        self.configure_optimizer(self, unlock=unlocked)
             
     def _precheck_save(self):
         # To be used before checkup runs.

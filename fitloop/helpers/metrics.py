@@ -1,3 +1,4 @@
+import torch
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -47,11 +48,27 @@ class Metrics:
         for stage in self.stages:
             self_stage = getattr(self, stage)
             for metric in self_stage:
-                m_run = self_stage[metric][self._runs - 1]
-                try:
-                    self_stage[metric][self._runs - 1] = np.array(m_run)
-                except:
-                    pass
+                m_run = self_stage[metric][-1]
+                if isinstance(m_run[0],(int,float, str)):
+                    self_stage[metric][-1] = np.array(m_run)
+
+    def _procval(self, val):
+        # Process the val.
+        ZERO_DIM  = torch.Size([])
+
+        # Remove grad requirements if tensor
+        if isinstance(val, Tensor):
+            if val.size() == ZERO_DIM:
+                val = val.detach().cpu().item()
+            else:
+                val = val.detach().cpu()
+            
+        if not self._no_float:
+            try:
+                val = float(val)
+            except:
+                pass
+        return val
                 
     def _append(self, stage, rdict):
         """
@@ -70,18 +87,14 @@ class Metrics:
         self_stage = getattr(self, stage)
         
         for key in rdict:
-            val = rdict[key]
+            val = self._procval(rdict[key])
+
             if key not in self_stage:
                 self_stage[key] = []
                 
             if len(self_stage[key]) < self._runs:
                 self_stage[key].append([])
-                
-            if not self._no_float:
-                try:
-                    val = float(val)
-                except:
-                    pass
+
             try:
                 self_stage[key][self._runs - 1].append(val)
             except:

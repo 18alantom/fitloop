@@ -6,7 +6,7 @@ README = (HERE/"README.md").read_text()
 
 setup(
   name="fitloop",
-  version="0.1.4",
+  version="0.1.5",
   description="fitloop trains Pytorch models",
   packages=find_packages(),
   long_description=README,

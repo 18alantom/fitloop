@@ -142,7 +142,10 @@ class LoopState:
         if self._no_float:
             return metric
         else:
-            return float(metric)
+            try:
+                return float(metric)
+            except:
+                return metric
     
     def _get_epoch_metrics(self, 
                 display_metrics:Optional[Union[str,List[str]]]=None
